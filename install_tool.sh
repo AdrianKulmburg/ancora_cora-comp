@@ -884,11 +884,17 @@ section "Building NVIDIA GPU benchmark"
 export HIP_PLATFORM="nvidia"
 
 
+if [ "${ANCORA_GPU_PLATFORM:-amd}" = "nvidia" ]; then
+    GPU_ARCH_FLAG="-arch=sm_${ANCORA_HIP_ARCHITECTURES}"
+else
+    GPU_ARCH_FLAG="--offload-arch=${ANCORA_HIP_ARCHITECTURES}"
+fi
+
 hipcc \
     -x cu \
     -O2 \
     -std=c++17 \
-    "--offload-arch=${ANCORA_HIP_ARCHITECTURES}" \
+    "${GPU_ARCH_FLAG}" \
     -I"${ANCORA_SOURCE_DIR}/include" \
     -DANCORA_MODE=ANCORA_MODE_FAST \
     -DANCORA_USE_GPU=1 \
