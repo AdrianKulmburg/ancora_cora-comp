@@ -154,68 +154,54 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
 
 
 # ============================================================================
-# 2. OpenBLAS
+# 2. BLAS
 # ============================================================================
 #
 # ancora FAST CPU requires BLAS.
 #
-# Ubuntu may install cblas.h in an architecture-specific OpenBLAS include
-# directory, so do not assume it lives at /usr/include/cblas.h.
+# Install both the generic BLAS development package and OpenBLAS. The generic
+# package provides the standard BLAS development interface while OpenBLAS
+# provides the actual implementation.
 # ============================================================================
 
 echo
-echo "==> Installing OpenBLAS"
+echo "==> Installing BLAS / OpenBLAS"
 
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    libblas-dev \
     libopenblas-dev
 
 
-echo "==> Checking OpenBLAS installation"
+echo "==> Checking BLAS installation"
 
-OPENBLAS_LIB=""
-OPENBLAS_INCLUDE=""
+# Locate the BLAS library without assuming a particular architecture-specific
+# directory.
+BLAS_LIBRARY=""
 
-# Find the actual OpenBLAS shared library.
 for candidate in \
     /usr/lib/x86_64-linux-gnu/libopenblas.so \
     /usr/lib/x86_64-linux-gnu/openblas-pthread/libopenblas.so \
     /usr/lib/x86_64-linux-gnu/openblas-serial/libopenblas.so \
-    /usr/lib/libopenblas.so
+    /usr/lib/x86_64-linux-gnu/libblas.so \
+    /usr/lib/libopenblas.so \
+    /usr/lib/libblas.so
 do
     if [ -f "${candidate}" ]; then
-        OPENBLAS_LIB="${candidate}"
+        BLAS_LIBRARY="${candidate}"
         break
     fi
 done
 
-# Find cblas.h wherever the Debian package installed it.
-while IFS= read -r candidate; do
-    if [ -f "${candidate}" ]; then
-        OPENBLAS_INCLUDE="$(dirname "${candidate}")"
-        break
-    fi
-done < <(
-    dpkg -L libopenblas-dev 2>/dev/null |
-    grep '/cblas\.h$'
-)
-
-if [ -z "${OPENBLAS_LIB}" ]; then
-    echo "Installed OpenBLAS files:" >&2
-    dpkg -L libopenblas-dev >&2 || true
-    die "Could not locate libopenblas.so"
+if [ -z "${BLAS_LIBRARY}" ]; then
+    echo "Installed BLAS files:" >&2
+    dpkg -L libblas-dev 2>/dev/null >&2 || true
+    dpkg -L libopenblas-dev 2>/dev/null >&2 || true
+    die "Could not locate a BLAS library"
 fi
 
-if [ -z "${OPENBLAS_INCLUDE}" ]; then
-    echo "Installed OpenBLAS files:" >&2
-    dpkg -L libopenblas-dev >&2 || true
-    die "Could not locate cblas.h"
-fi
-
-echo "OpenBLAS library : ${OPENBLAS_LIB}"
-echo "OpenBLAS includes: ${OPENBLAS_INCLUDE}"
+echo "BLAS library: ${BLAS_LIBRARY}"
 
 ldconfig
-
 
 
 # ============================================================================
@@ -500,8 +486,8 @@ cmake \
     -DANCORA_USE_GPU=OFF \
     -DANCORA_BUILD_TESTS=OFF \
     -DBLA_VENDOR=OpenBLAS \
-    -DBLAS_LIBRARIES="${OPENBLAS_LIB}" \
-    -DBLAS_INCLUDE_DIR="${OPENBLAS_INCLUDE}"
+    -DBLAS_LIBRARIES="${BLAS_LIBRARY}"
+
 
 
 echo
@@ -535,8 +521,9 @@ cc \
     -o "${TOOLKIT_DIR}/ancora_benchmark_cpu" \
     "${CPU_BUILD_DIR}/libancora_fast.a" \
     -lhighs \
-    -lopenblas \
+    "${BLAS_LIBRARY}" \
     -lm
+
 
 
 [ -x "${TOOLKIT_DIR}/ancora_benchmark_cpu" ] || \
