@@ -40,6 +40,13 @@
 #
 # If the GPU cannot be identified, installation stops immediately.
 #
+# It also detects the actual CPU's vectorization-relevant feature flags
+# (mirroring the GPU detection) and passes a portable -march= baseline to
+# both the ancora library build and the benchmark driver builds, rather
+# than guessing or using -march=native (which targets the BUILD machine's
+# exact CPU and can crash with an illegal-instruction fault on a different
+# RUN machine).
+#
 # ============================================================================
 
 set -euo pipefail
@@ -64,6 +71,9 @@ ANCORA_REPO_URL="${ANCORA_REPO_URL:-https://github.com/AdrianKulmburg/ancora}"
 ANCORA_GPU_NAME=""
 ANCORA_GPU_COMPUTE_CAPABILITY=""
 ANCORA_HIP_ARCHITECTURES=""
+
+# Determined automatically from /proc/cpuinfo (see step 3b).
+ANCORA_CPU_MARCH=""
 
 
 # ============================================================================
@@ -362,6 +372,39 @@ if [ "${ANCORA_GPU_COMPUTE_CAPABILITY}" = "8.0" ]; then
     echo "Detected NVIDIA A100-class compute capability."
     echo "Using HIP architecture 80."
 fi
+
+
+# ============================================================================
+# 3b. Detect CPU features (for a portable but real vectorization baseline)
+# ============================================================================
+#
+# Mirrors the GPU detection above: rather than assuming this worker's CPU
+# supports a given instruction set (a guess that can crash with an illegal
+# instruction on a different worker), query /proc/cpuinfo directly and pick
+# the best SUPPORTED baseline. Deliberately never uses -march=native, which
+# targets the BUILD machine's exact CPU model rather than a portable feature
+# level -- x86-64-vN avoids that risk at negligible cost, at the price of
+# not using the very latest instruction set a specific machine might have.
+#
+# The leading/trailing spaces in the grep patterns matter: /proc/cpuinfo's
+# "flags" line is a space-separated list, and this avoids e.g. "avx2"
+# accidentally matching as a substring of some other flag name.
+# ============================================================================
+
+section "Checking CPU features"
+
+ANCORA_CPU_MARCH="x86-64"   # conservative fallback: no vectorization baseline beyond the platform minimum (SSE2)
+
+if grep -q ' avx512f ' /proc/cpuinfo 2>/dev/null; then
+    ANCORA_CPU_MARCH="x86-64-v4"
+elif grep -q ' avx2 ' /proc/cpuinfo 2>/dev/null && grep -q ' fma ' /proc/cpuinfo 2>/dev/null; then
+    ANCORA_CPU_MARCH="x86-64-v3"
+elif grep -q ' sse4_2 ' /proc/cpuinfo 2>/dev/null; then
+    ANCORA_CPU_MARCH="x86-64-v2"
+fi
+
+echo "Detected CPU march baseline:"
+echo "    ${ANCORA_CPU_MARCH}"
 
 
 # ============================================================================
@@ -733,7 +776,8 @@ cmake \
     -DANCORA_BUILD_TESTS=OFF \
     -DBLA_VENDOR=OpenBLAS \
     -DBLAS_LIBRARIES="${BLAS_LIBRARY}" \
-    -DBLAS_INCLUDE_DIR="${CBLAS_INCLUDE_DIR}"
+    -DBLAS_INCLUDE_DIRS="${CBLAS_INCLUDE_DIR}" \
+    -DCMAKE_C_FLAGS="-march=${ANCORA_CPU_MARCH}"
 
 
 cmake \
@@ -759,7 +803,8 @@ echo "    ${CPU_BUILD_DIR}/libancora_fast.a"
 section "Building CPU benchmark"
 
 cc \
-    -O2 \
+    -O3 \
+    -march="${ANCORA_CPU_MARCH}" \
     -std=c11 \
     -I"${ANCORA_SOURCE_DIR}/include" \
     -DANCORA_MODE=ANCORA_MODE_FAST \
@@ -831,6 +876,11 @@ fi
 #
 # CMAKE_HIP_PLATFORM=nvidia and CMAKE_HIP_COMPILER=nvcc are passed explicitly
 # because this is a native CMake HIP-language build targeting NVIDIA.
+#
+# CMAKE_C_FLAGS carries the detected CPU baseline too: even in the GPU
+# build, ancora's plain C files (below the GPU size threshold, and any
+# CPU-side host code) benefit from the same portable vectorization target
+# as the CPU-only build.
 # ---------------------------------------------------------------------------
 
 cmake \
@@ -845,6 +895,7 @@ cmake \
     -DCMAKE_HIP_PLATFORM=nvidia \
     -DCMAKE_HIP_COMPILER="${CUDA_ROOT}/bin/nvcc" \
     -DCMAKE_CUDA_COMPILER="${CUDA_ROOT}/bin/nvcc" \
+    -DCMAKE_C_FLAGS="-march=${ANCORA_CPU_MARCH}" \
     -DANCORA_BUILD_TESTS=OFF
 
 
@@ -872,40 +923,24 @@ echo "    ${GPU_BUILD_DIR}/libancora_fast_gpu.a"
 # 14. Build NVIDIA GPU benchmark
 # ============================================================================
 #
-# Use hipcc rather than cc.
-#
-# ROCm documents hipcc as the compiler driver for the NVIDIA HIP backend and
-# recommends it for linking because it supplies the required HIP/CUDA runtime
-# libraries.
+# Compiled with the plain host C compiler (cc), NOT hipcc/nvcc: the driver
+# (ancora_benchmark.c) contains no device code of its own -- it only calls
+# ancora's ordinary C API, with all actual GPU work already compiled into
+# libancora_fast_gpu.a. It only needs to LINK against the CUDA runtime and
+# cuBLAS, not be compiled as device code itself. -no-pie is required because
+# the HIP/CUDA objects inside libancora_fast_gpu.a are not PIC-compatible
+# with a PIE executable.
 # ============================================================================
 
 section "Building NVIDIA GPU benchmark"
 
 export HIP_PLATFORM="nvidia"
 
-
-if [ "${ANCORA_GPU_PLATFORM:-amd}" = "nvidia" ]; then
-    GPU_ARCH_FLAG="-arch=sm_${ANCORA_HIP_ARCHITECTURES}"
-else
-    GPU_ARCH_FLAG="--offload-arch=${ANCORA_HIP_ARCHITECTURES}"
-fi
-
-#hipcc \
-#    -x cu \
-#    -O2 \
-#    -std=c++17 \
-#    "${GPU_ARCH_FLAG}" \
-#    -I"${ANCORA_SOURCE_DIR}/include" \
-#    -DANCORA_MODE=ANCORA_MODE_FAST \
-#    -DANCORA_USE_GPU=1 \
-#    "${TOOLKIT_DIR}/src/ancora_benchmark.c" \
-#    "${GPU_BUILD_DIR}/libancora_fast_gpu.a" \
-#    -L/usr/local/lib \
-#    -lhighs \
-#    -lm \
-#    -o "${TOOLKIT_DIR}/ancora_benchmark_gpu"
-
-cc -O2 -std=c11 -no-pie \
+cc \
+    -O3 \
+    -march="${ANCORA_CPU_MARCH}" \
+    -std=c11 \
+    -no-pie \
     -I"${ANCORA_SOURCE_DIR}/include" \
     -DANCORA_MODE=ANCORA_MODE_FAST \
     -DANCORA_USE_GPU=1 \
@@ -957,6 +992,10 @@ echo
 echo "ROCm root:"
 echo "    ${ANCORA_ROCM_ROOT}"
 
+echo
+echo "Detected CPU march baseline:"
+echo "    ${ANCORA_CPU_MARCH}"
+
 
 # ============================================================================
 # 16. Done
@@ -977,3 +1016,6 @@ echo "    ${ANCORA_GPU_NAME}"
 echo
 echo "HIP architecture:"
 echo "    ${ANCORA_HIP_ARCHITECTURES}"
+echo
+echo "CPU march baseline:"
+echo "    ${ANCORA_CPU_MARCH}"
