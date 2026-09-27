@@ -11,23 +11,38 @@ fi
 
 PARAMS="$4"
 
-# Extract the device type from the JSON payload
-read -r DEVICE <<EOF
-$(printf '%s' "$PARAMS" | python3 -c 'import json,sys; p=json.load(sys.stdin); print(p.get("device", "cpu"))')
+read -r DEVICE DIM GENERATORS <<EOF
+$(printf '%s' "$PARAMS" | python3 -c 'import json,sys; p=json.load(sys.stdin); print(p.get("device", "cpu"), p.get("dim", 1), p.get("generators", 1))')
 EOF
 
 TOOLKIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# If the instance uses a GPU, warm it up / initialize the context
 if [ "$DEVICE" = "gpu" ]; then
     if [ -x "${TOOLKIT_DIR}/ancora_benchmark_gpu" ]; then
         echo "Initializing and warming up GPU context..."
 
-        # Run a tiny, minimal invocation to force HIP/ROCm runtime initialization
-        # and kernel loading without affecting your actual timed measurements.
-        # (Adjust arguments to match a minimal valid run for your binary,
-        # or redirect output to /dev/null to keep logs clean)
-        "${TOOLKIT_DIR}/ancora_benchmark_gpu" "zonotope" "matMul" "1" "1" "1" "1" "0" "" > /dev/null 2>&1 || true
+        # Wake the GPU / keep it initialized between processes, if permitted.
+        nvidia-smi -pm 1 >/dev/null 2>&1 || echo "note: could not enable GPU persistence mode (likely insufficient privileges)"
+
+        # Persistent, writable JIT cache directory: THIS is what actually
+        # survives the process boundary between this script and
+        # run_instance.sh's later invocation -- context/handle state does
+        # not, but a cached compiled kernel does, avoiding a recompile on
+        # first use in the timed run.
+        export CUDA_CACHE_PATH="${TOOLKIT_DIR}/.nv_cache"
+        mkdir -p "${CUDA_CACHE_PATH}"
+
+        # Warm up with dimensions close to the real instance, since cuBLAS/
+        # hipBLAS may select a different kernel variant (and thus a
+        # different cache entry) depending on problem size.
+        WARM_DIM="${DIM:-64}"
+        WARM_GEN="${GENERATORS:-64}"
+
+        echo "Warm-up run: dim=${WARM_DIM}, generators=${WARM_GEN}"
+        if ! "${TOOLKIT_DIR}/ancora_benchmark_gpu" \
+                "zonotope" "matMul" "${WARM_DIM}" "${WARM_GEN}" "1" "1" "0" ""; then
+            echo "warning: GPU warm-up run failed (see output above); continuing anyway"
+        fi
     else
         echo "No GPU driver found; skipping warm-up."
     fi

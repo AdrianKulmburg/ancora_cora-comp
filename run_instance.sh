@@ -33,6 +33,8 @@ PARAMS="$4"
 # The results file is always the last argument.
 RESULTS_FILE="${@: -1}"
 
+export CUDA_CACHE_PATH="${TOOLKIT_DIR}/.nv_cache"
+
 # Everything the tool needs is in the params JSON; the benchmark and instance names only
 # repeat it in readable form. python3 is always present on the worker (the harness itself
 # runs on it). batch_size is absent on the unbatched benchmarks, hence the default of 1.

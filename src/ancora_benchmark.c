@@ -243,16 +243,13 @@ static int run_interval_unbatched(const char *operation, slong n, slong points,
     }
     else if (strcmp(operation, "matMul") == 0) {
         ancora_mat M;
-        ancora_vec zero_c;
         ancora_interval res;
         ANCORA_TRY(make_random_matrix(&M, n));
-        ANCORA_TRY(make_zero_vector(&zero_c, n));
         ANCORA_TRY(init_interval_dim(&res, n));
         for (slong r = 0; r < repetition; r++) {
-            ANCORA_TRY(ancora_interval_affine(&res, &M, &zero_c, &I));
+            ANCORA_TRY(ancora_interval_matMul(&res, &M, &I));
         }
         ANCORA_TRY(ancora_mat_free(&M));
-        ANCORA_TRY(ancora_vec_free(&zero_c));
         ANCORA_TRY(ancora_interval_free(&res));
     }
     else if (strcmp(operation, "minkSum") == 0) {
@@ -350,21 +347,18 @@ static int run_interval_batched(const char *operation, slong n, slong points,
     }
     else if (strcmp(operation, "matMul") == 0) {
         ancora_mat M;
-        ancora_vec zero_c;
         ancora_interval *res = alloc_interval_batch(B, n);
         ancora_interval **res_batch = malloc((size_t)B * sizeof(ancora_interval *));
         if (!res || !res_batch) { rc = fail("alloc res batch"); goto cleanup; }
         for (slong b = 0; b < B; b++) res_batch[b] = &res[b];
         if (make_random_matrix(&M, n) != ANCORA_OK) { rc = fail("make matrix"); goto cleanup; }
-        if (make_zero_vector(&zero_c, n) != ANCORA_OK) { rc = fail("make zero"); goto cleanup; }
         for (slong r = 0; r < repetition; r++) {
-            if (ancora_interval_batched_affine(res_batch, &M, &zero_c, I_batch, B) != ANCORA_OK) {
+            if (ancora_interval_batched_matMul(res_batch, &M, I_batch, B) != ANCORA_OK) {
                 rc = fail("interval batched matMul");
                 goto cleanup;
             }
         }
         ancora_mat_free(&M);
-        ancora_vec_free(&zero_c);
         free(res_batch);
         free_interval_batch(res, B);
     }
@@ -452,16 +446,13 @@ static int run_zonotope_unbatched(const char *operation, slong n, slong m,
     }
     else if (strcmp(operation, "matMul") == 0) {
         ancora_mat M;
-        ancora_vec zero_c;
         ancora_zonotope res;
         ANCORA_TRY(make_random_matrix(&M, n));
-        ANCORA_TRY(make_zero_vector(&zero_c, n));
         ANCORA_TRY(init_zonotope_dim(&res, n, m));
         for (slong r = 0; r < repetition; r++) {
-            ANCORA_TRY(ancora_zonotope_affine(&res, &M, &zero_c, &Z));
+            ANCORA_TRY(ancora_zonotope_matMul(&res, &M, &Z));
         }
         ANCORA_TRY(ancora_mat_free(&M));
-        ANCORA_TRY(ancora_vec_free(&zero_c));
         ANCORA_TRY(ancora_zonotope_free(&res));
     }
     else if (strcmp(operation, "minkSum") == 0) {
@@ -559,21 +550,18 @@ static int run_zonotope_batched(const char *operation, slong n, slong m,
     }
     else if (strcmp(operation, "matMul") == 0) {
         ancora_mat M;
-        ancora_vec zero_c;
         ancora_zonotope *res = alloc_zonotope_batch(B, n, m);
         ancora_zonotope **res_batch = malloc((size_t)B * sizeof(ancora_zonotope *));
         if (!res || !res_batch) { rc = fail("alloc res batch"); goto cleanup; }
         for (slong b = 0; b < B; b++) res_batch[b] = &res[b];
         if (make_random_matrix(&M, n) != ANCORA_OK) { rc = fail("make matrix"); goto cleanup; }
-        if (make_zero_vector(&zero_c, n) != ANCORA_OK) { rc = fail("make zero"); goto cleanup; }
         for (slong r = 0; r < repetition; r++) {
-            if (ancora_zonotope_batched_affine(res_batch, &M, &zero_c, Z_batch, B) != ANCORA_OK) {
+            if (ancora_zonotope_batched_matMul(res_batch, &M, Z_batch, B) != ANCORA_OK) {
                 rc = fail("zonotope batched matMul");
                 goto cleanup;
             }
         }
         ancora_mat_free(&M);
-        ancora_vec_free(&zero_c);
         free(res_batch);
         free_zonotope_batch(res, B);
     }
