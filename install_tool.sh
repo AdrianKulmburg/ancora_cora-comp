@@ -26,6 +26,78 @@ set -e
 VERSION="${1:-v1}"
 echo "Installing tool (interface $VERSION)"
 
+# ---------------------------------------------------------------------------
+# 1. Base build tools
+# ---------------------------------------------------------------------------
+echo "==> Installing base build tools"
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    cmake \
+    gcc \
+    g++ \
+    git \
+    python3 \
+    wget \
+    build-essential \
+    libgomp1 \
+    ca-certificates \
+    gpg
+
+# ---------------------------------------------------------------------------
+# 2. HiGHS (linear programming solver used by ancora's zonotope containment)
+# ---------------------------------------------------------------------------
+# HiGHS is not reliably packaged for Ubuntu 22.04, so build it from source. The
+# FindHIGHS.cmake module looks for highs/interfaces/highs_c_api.h and libhighs,
+# which `cmake --install` places under /usr/local.
+if [ ! -f /usr/local/include/highs/interfaces/highs_c_api.h ] || \
+   [ ! -f /usr/local/lib/libhighs.so ]; then
+    echo "==> Building HiGHS from source"
+    HIGHS_SRC="${TOOLKIT_DIR:-/tmp}/HiGHS"
+    if [ ! -d "${HIGHS_SRC}/.git" ]; then
+        git clone --depth 1 https://github.com/ERGO-Code/HiGHS.git "${HIGHS_SRC}"
+    fi
+    cmake -S "${HIGHS_SRC}" -B "${HIGHS_SRC}/build" -DCMAKE_BUILD_TYPE=Release
+    cmake --build "${HIGHS_SRC}/build" -j"$(nproc)"
+    cmake --install "${HIGHS_SRC}/build"
+    ldconfig
+else
+    echo "==> HiGHS already installed"
+fi
+
+# ---------------------------------------------------------------------------
+# 3. CUDA toolkit (provides nvcc and libcudart for HIP-over-CUDA)
+# ---------------------------------------------------------------------------
+if ! command -v nvcc >/dev/null 2>&1; then
+    echo "==> Installing CUDA toolkit"
+    CUDA_KEYRING="cuda-keyring_1.1-1_all.deb"
+    wget -q "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/${CUDA_KEYRING}" \
+        -O "/tmp/${CUDA_KEYRING}"
+    dpkg -i "/tmp/${CUDA_KEYRING}"
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y cuda-toolkit
+else
+    echo "==> CUDA toolkit already installed (nvcc found)"
+fi
+
+# ---------------------------------------------------------------------------
+# 4. HIP / ROCm (HIP-over-CUDA backend for the NVIDIA GPU)
+# ---------------------------------------------------------------------------
+# Install ROCm's HIP packages that target the CUDA backend (hip-runtime-nvidia +
+# hip-dev). These provide hip/hip_runtime.h and hipcc. The ROCm apt repo version
+# is configurable via ROCM_VERSION.
+if [ ! -f /opt/rocm/include/hip/hip_runtime.h ] && \
+   ! find /usr /opt -name hip_runtime.h 2>/dev/null | grep -q hip/hip_runtime.h; then
+    echo "==> Installing HIP (ROCm, CUDA backend)"
+    ROCM_VERSION="${ROCM_VERSION:-6.3.1}"
+    wget -q -O - https://repo.radeon.com/rocm/rocm.gpg.key | gpg --dearmor -o /usr/share/keyrings/rocm.gpg
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/${ROCM_VERSION} jammy main" \
+        > /etc/apt/sources.list.d/rocm.list
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y hip-runtime-nvidia hip-dev
+else
+    echo "==> HIP already installed"
+fi
+
 # --- Locate the ancora source tree ---------------------------------------------
 TOOLKIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${TOOLKIT_DIR}/.." && pwd)"
