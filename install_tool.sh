@@ -7,36 +7,37 @@
 #
 # This toolkit drives the ancora library.
 #
-# ancora is built in FAST mode in two configurations:
+# Two FAST-mode ancora builds are produced:
 #
-#   1. CPU:
-#        libancora_fast.a
-#        -> ancora_benchmark_cpu
+#   CPU:
+#       libancora_fast.a
+#       -> ancora_benchmark_cpu
 #
-#   2. GPU:
-#        libancora_fast_gpu.a
-#        -> ancora_benchmark_gpu
+#   NVIDIA GPU:
+#       libancora_fast_gpu.a
+#       -> ancora_benchmark_gpu
 #
-# The GPU configuration targets NVIDIA GPUs using:
+# The GPU build uses HIP over CUDA:
 #
-#        NVIDIA CUDA
-#             |
-#             v
-#        HIP-over-CUDA
-#             |
-#             v
-#        ancora HIP kernels
+#       NVIDIA GPU
+#           |
+#         CUDA
+#           |
+#     HIP-over-CUDA
+#           |
+#        ancora
 #
-# The GPU build is optional. If the HIP/CUDA toolchain cannot be configured,
-# the CPU build is still installed and GPU instances will report unsupported.
+# The GPU build is optional. If the NVIDIA/HIP toolchain cannot be configured,
+# the CPU build remains available and GPU instances can report unsupported.
 #
-# Source selection, in order:
+# Source selection:
 #
-#   1. ANCORA_SOURCE_DIR, if set
+#   1. ANCORA_SOURCE_DIR, if explicitly set
 #   2. ../ancora relative to this repository
 #   3. git clone of ANCORA_REPO_URL
 #
 # Argument:
+#
 #   $1: interface version string, e.g. "v1"
 
 
@@ -49,65 +50,90 @@ set -e
 
 VERSION="${1:-v1}"
 
-# NVIDIA is the only supported GPU platform for this installation.
-ANCORA_GPU_PLATFORM="${ANCORA_GPU_PLATFORM:-nvidia}"
+# This installation is specifically for NVIDIA GPUs.
+ANCORA_GPU_PLATFORM="nvidia"
 
-# ROCm version used for HIP-over-CUDA.
+# ROCm/HIP version used for HIP-over-CUDA.
+#
+# Override with:
+#
+#   ROCM_VERSION=6.3.1 ./install_tool.sh
+#
 ROCM_VERSION="${ROCM_VERSION:-6.3.1}"
 
-# ROCm installation prefix.
+# ROCm installation root.
 ANCORA_ROCM_ROOT="${ANCORA_ROCM_ROOT:-/opt/rocm}"
 
-# Optional explicit GPU architecture.
+# Optional NVIDIA GPU architecture.
 #
-# If empty, CMake will use its configured/default architecture.
-# For a known NVIDIA GPU, setting this explicitly is preferable.
+# If left empty, CMake/HIP will use its configured default.
 #
-# Examples:
+# Common examples:
 #
-#   RTX 30 / A100: 80
-#   A10:           86
-#   RTX 40 / L40:  89
+#   A100       -> 80
+#   A10        -> 86
+#   RTX 3090   -> 86
+#   RTX 4090   -> 89
+#   L40/L40S   -> 89
+#
+# Set this explicitly when the competition's GPU model is known.
 #
 ANCORA_HIP_ARCHITECTURES="${ANCORA_HIP_ARCHITECTURES:-}"
 
-
-echo "============================================================"
-echo "Installing tool"
-echo "Interface version : ${VERSION}"
-echo "GPU platform      : ${ANCORA_GPU_PLATFORM}"
-echo "ROCm version      : ${ROCM_VERSION}"
-echo "ROCm root         : ${ANCORA_ROCM_ROOT}"
-echo "============================================================"
+# ancora repository.
+ANCORA_REPO_URL="${ANCORA_REPO_URL:-https://github.com/AdrianKulmburg/ancora}"
 
 
 # ============================================================================
-# Validate configuration
-# ============================================================================
-
-if [ "${ANCORA_GPU_PLATFORM}" != "nvidia" ]; then
-    echo "error: this install script supports NVIDIA GPUs only." >&2
-    echo "       ANCORA_GPU_PLATFORM must be 'nvidia'." >&2
-    exit 1
-fi
-
-
-# ============================================================================
-# Locate this repository
+# Basic paths
 # ============================================================================
 
 TOOLKIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${TOOLKIT_DIR}/.." && pwd)"
 
-echo "Toolkit directory: ${TOOLKIT_DIR}"
-echo "Repository root:   ${REPO_ROOT}"
+
+# ============================================================================
+# Banner
+# ============================================================================
+
+echo
+echo "============================================================"
+echo "Installing ancora tool"
+echo "============================================================"
+echo "Interface version : ${VERSION}"
+echo "Toolkit directory : ${TOOLKIT_DIR}"
+echo "Repository root   : ${REPO_ROOT}"
+echo "GPU platform      : NVIDIA"
+echo "HIP backend       : HIP-over-CUDA"
+echo "ROCm version      : ${ROCM_VERSION}"
+echo "ROCm root         : ${ANCORA_ROCM_ROOT}"
+echo "HIP architecture  : ${ANCORA_HIP_ARCHITECTURES:-CMake default}"
+echo "============================================================"
+echo
+
+
+# ============================================================================
+# Helper functions
+# ============================================================================
+
+die()
+{
+    echo
+    echo "ERROR: $*" >&2
+    exit 1
+}
+
+
+have_command()
+{
+    command -v "$1" >/dev/null 2>&1
+}
 
 
 # ============================================================================
 # 1. Base build tools
 # ============================================================================
 
-echo
 echo "==> Installing base build tools"
 
 apt-get update
@@ -119,22 +145,75 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
     git \
     python3 \
     wget \
+    curl \
     build-essential \
     libgomp1 \
     ca-certificates \
-    gpg
+    gpg \
+    pkg-config
 
 
 # ============================================================================
-# 2. HiGHS
+# 2. OpenBLAS
 # ============================================================================
 #
-# HiGHS is used by ancora's FAST zonotope containment implementation.
+# ancora FAST CPU requires BLAS.
 #
-# The ancora FindHIGHS.cmake module expects:
+# We deliberately use OpenBLAS rather than depending on CMake's generic BLAS
+# autodetection.
 #
-#     /usr/local/include/highs/interfaces/highs_c_api.h
-#     /usr/local/lib/libhighs.so
+# This avoids failures such as:
+#
+#   Could NOT find BLAS (missing: BLAS_LIBRARIES)
+#
+# ============================================================================
+
+echo
+echo "==> Installing OpenBLAS"
+
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    libopenblas-dev
+
+
+echo "==> Checking OpenBLAS installation"
+
+if [ ! -f /usr/include/cblas.h ]; then
+    die "OpenBLAS installed but /usr/include/cblas.h was not found"
+fi
+
+OPENBLAS_LIB=""
+
+for candidate in \
+    /usr/lib/x86_64-linux-gnu/libopenblas.so \
+    /usr/lib/x86_64-linux-gnu/openblas-pthread/libopenblas.so \
+    /usr/lib/x86_64-linux-gnu/openblas-serial/libopenblas.so \
+    /usr/lib/libopenblas.so
+do
+    if [ -f "${candidate}" ]; then
+        OPENBLAS_LIB="${candidate}"
+        break
+    fi
+done
+
+if [ -z "${OPENBLAS_LIB}" ]; then
+    echo "Installed OpenBLAS files:" >&2
+    dpkg -L libopenblas-dev | grep -E 'libopenblas|cblas.h' >&2 || true
+    die "Could not locate libopenblas.so"
+fi
+
+echo "OpenBLAS library: ${OPENBLAS_LIB}"
+
+ldconfig
+
+
+# ============================================================================
+# 3. HiGHS
+# ============================================================================
+#
+# ancora FAST zonotope containment uses HiGHS.
+#
+# The ancora FindHIGHS.cmake module expects the development files under
+# /usr/local after installation.
 #
 # ============================================================================
 
@@ -147,23 +226,36 @@ if [ ! -f /usr/local/include/highs/interfaces/highs_c_api.h ] || \
     HIGHS_SRC="${TOOLKIT_DIR}/HiGHS"
 
     if [ ! -d "${HIGHS_SRC}/.git" ]; then
+
+        echo "Cloning HiGHS..."
+
         git clone \
             --depth 1 \
             https://github.com/ERGO-Code/HiGHS.git \
             "${HIGHS_SRC}"
+
+    else
+
+        echo "HiGHS source already present"
+
     fi
+
 
     cmake \
         -S "${HIGHS_SRC}" \
         -B "${HIGHS_SRC}/build" \
-        -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_TESTING=OFF
+
 
     cmake \
         --build "${HIGHS_SRC}/build" \
         -j"$(nproc)"
 
+
     cmake \
         --install "${HIGHS_SRC}/build"
+
 
     ldconfig
 
@@ -176,115 +268,130 @@ fi
 
 
 # ============================================================================
-# 3. CUDA toolkit
+# 4. CUDA
 # ============================================================================
 #
-# CUDA provides:
+# CUDA is the actual NVIDIA backend underneath HIP.
 #
-#     nvcc
-#     libcudart
+# We need nvcc and the CUDA runtime.
 #
-# HIP-over-CUDA uses the CUDA toolkit underneath.
 # ============================================================================
 
-if command -v nvcc >/dev/null 2>&1; then
+echo
+echo "==> Checking CUDA"
 
-    echo
-    echo "==> CUDA toolkit already installed"
+if have_command nvcc; then
 
+    echo "CUDA already installed:"
     nvcc --version
 
 else
 
-    echo
-    echo "==> Installing CUDA toolkit"
+    echo "CUDA not found; installing CUDA toolkit"
 
     CUDA_KEYRING="cuda-keyring_1.1-1_all.deb"
+    CUDA_KEYRING_PATH="/tmp/${CUDA_KEYRING}"
+
 
     wget -q \
         "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/${CUDA_KEYRING}" \
-        -O "/tmp/${CUDA_KEYRING}"
+        -O "${CUDA_KEYRING_PATH}"
 
-    dpkg -i "/tmp/${CUDA_KEYRING}"
+
+    dpkg -i "${CUDA_KEYRING_PATH}"
+
 
     apt-get update
 
+
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
         cuda-toolkit
+
+
+    have_command nvcc || \
+        die "CUDA installation completed but nvcc was not found"
 
 fi
 
 
 # ============================================================================
-# 4. HIP / ROCm — NVIDIA backend
+# 5. HIP / ROCm — NVIDIA backend
 # ============================================================================
 #
 # IMPORTANT:
 #
-# This is NOT an AMD/ROCm GPU build.
+# This is HIP configured for NVIDIA/CUDA.
 #
-# We install HIP's NVIDIA backend:
+# We do NOT want an AMD GPU configuration here.
+#
+# Packages:
 #
 #     hip-runtime-nvidia
 #     hip-dev
 #
-# HIP then uses CUDA underneath.
-#
 # ============================================================================
 
-if [ ! -f "${ANCORA_ROCM_ROOT}/include/hip/hip_runtime.h" ]; then
+echo
+echo "==> Checking HIP"
 
-    echo
-    echo "==> Installing HIP ${ROCM_VERSION} for NVIDIA/CUDA"
+if [ -f "${ANCORA_ROCM_ROOT}/include/hip/hip_runtime.h" ]; then
+
+    echo "HIP headers already exist at:"
+    echo "    ${ANCORA_ROCM_ROOT}/include/hip/hip_runtime.h"
+
+else
+
+    echo "HIP not found; installing ROCm/HIP ${ROCM_VERSION}"
 
     wget -q -O - \
         https://repo.radeon.com/rocm/rocm.gpg.key \
         | gpg --dearmor -o /usr/share/keyrings/rocm.gpg
+
 
     echo \
         "deb [arch=amd64 signed-by=/usr/share/keyrings/rocm.gpg] " \
         "https://repo.radeon.com/rocm/apt/${ROCM_VERSION} jammy main" \
         > /etc/apt/sources.list.d/rocm.list
 
+
     apt-get update
+
 
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
         hip-runtime-nvidia \
         hip-dev
 
-else
-
-    echo
-    echo "==> HIP already installed at ${ANCORA_ROCM_ROOT}"
-
 fi
 
 
 # ============================================================================
-# HIP environment
+# 6. HIP environment
 # ============================================================================
 
 export PATH="${ANCORA_ROCM_ROOT}/bin:${PATH}"
 
-# Explicitly select the NVIDIA HIP backend.
+# Force the NVIDIA backend for tools that honor HIP_PLATFORM.
 export HIP_PLATFORM="nvidia"
 
-echo
-echo "==> HIP configuration"
 
-if command -v hipcc >/dev/null 2>&1; then
+echo
+echo "==> Checking HIP compiler"
+
+if have_command hipcc; then
+
     echo "hipcc: $(command -v hipcc)"
     hipcc --version
+
 else
-    echo "warning: hipcc was not found after HIP installation" >&2
+
+    echo "warning: hipcc was not found." >&2
+    echo "         The CPU build will still be attempted." >&2
+
 fi
 
 
 # ============================================================================
-# 5. hipBLAS
-# ============================================================================
-#
-# ancora's GPU matrix implementation uses hipBLAS.
+# 7. hipBLAS
 # ============================================================================
 
 echo
@@ -296,29 +403,37 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
 
 
 # ============================================================================
-# 6. Locate ancora source
+# 8. Locate ancora source
 # ============================================================================
 
-ANCORA_REPO_URL="${ANCORA_REPO_URL:-https://github.com/AdrianKulmburg/ancora}"
+echo
+echo "==> Locating ancora source"
 
 ANCORA_SOURCE_DIR="${ANCORA_SOURCE_DIR:-}"
 
 
-if [ -z "${ANCORA_SOURCE_DIR}" ] && \
-   [ -f "${REPO_ROOT}/ancora/CMakeLists.txt" ]; then
+# First choice: explicitly supplied source directory.
+if [ -n "${ANCORA_SOURCE_DIR}" ]; then
+
+    echo "Using ANCORA_SOURCE_DIR:"
+    echo "    ${ANCORA_SOURCE_DIR}"
+
+# Second choice: sibling repository.
+elif [ -f "${REPO_ROOT}/ancora/CMakeLists.txt" ]; then
 
     ANCORA_SOURCE_DIR="${REPO_ROOT}/ancora"
 
-fi
+    echo "Using sibling ancora repository:"
+    echo "    ${ANCORA_SOURCE_DIR}"
 
-
-if [ -z "${ANCORA_SOURCE_DIR}" ]; then
-
-    echo
-    echo "==> ancora source not found locally"
-    echo "    Cloning ${ANCORA_REPO_URL}"
+# Third choice: clone.
+else
 
     ANCORA_SOURCE_DIR="${TOOLKIT_DIR}/ancora"
+
+    echo "ancora source not found locally."
+    echo "Cloning:"
+    echo "    ${ANCORA_REPO_URL}"
 
     if [ ! -d "${ANCORA_SOURCE_DIR}/.git" ]; then
 
@@ -332,31 +447,27 @@ if [ -z "${ANCORA_SOURCE_DIR}" ]; then
 fi
 
 
-if [ ! -f "${ANCORA_SOURCE_DIR}/CMakeLists.txt" ]; then
-
-    echo "error: ancora source not found at:" >&2
-    echo "       ${ANCORA_SOURCE_DIR}" >&2
-    echo >&2
-    echo "Set ANCORA_SOURCE_DIR to the ancora source tree," >&2
-    echo "or make sure the repository clone succeeded." >&2
-
-    exit 1
-
-fi
+[ -f "${ANCORA_SOURCE_DIR}/CMakeLists.txt" ] || \
+    die "ancora source not found at ${ANCORA_SOURCE_DIR}"
 
 
 echo
-echo "==> Using ancora source:"
+echo "Using ancora source:"
 echo "    ${ANCORA_SOURCE_DIR}"
 
 
 # ============================================================================
-# 7. Build ancora — FAST CPU
+# 9. Build ancora — FAST CPU
 # ============================================================================
 #
-# Result:
+# Configuration:
 #
-#     build/ancora_cpu/libancora_fast.a
+#     ANCORA_MODE_SAFE=OFF
+#     ANCORA_USE_GPU=OFF
+#
+# Output:
+#
+#     libancora_fast.a
 #
 # ============================================================================
 
@@ -365,16 +476,22 @@ echo "============================================================"
 echo "Building ancora FAST CPU"
 echo "============================================================"
 
+
 CPU_BUILD_DIR="${TOOLKIT_DIR}/build/ancora_cpu"
 
 
 cmake \
     -S "${ANCORA_SOURCE_DIR}" \
     -B "${CPU_BUILD_DIR}" \
+    -DCMAKE_BUILD_TYPE=Release \
     -DANCORA_MODE_SAFE=OFF \
     -DANCORA_USE_GPU=OFF \
     -DANCORA_BUILD_TESTS=OFF \
-    -DCMAKE_BUILD_TYPE=Release
+    -DBLA_VENDOR=OpenBLAS
+
+
+echo
+echo "==> Building ancora CPU library"
 
 
 cmake \
@@ -383,12 +500,16 @@ cmake \
     -j"$(nproc)"
 
 
+[ -f "${CPU_BUILD_DIR}/libancora_fast.a" ] || \
+    die "CPU ancora library was not produced"
+
+
 # ============================================================================
-# 8. Build CPU benchmark driver
+# 10. Build CPU benchmark
 # ============================================================================
 
 echo
-echo "==> Building CPU benchmark driver"
+echo "==> Building CPU benchmark"
 
 
 cc \
@@ -400,26 +521,32 @@ cc \
     -o "${TOOLKIT_DIR}/ancora_benchmark_cpu" \
     "${CPU_BUILD_DIR}/libancora_fast.a" \
     -lhighs \
+    -lopenblas \
     -lm
 
 
-echo "Built CPU driver:"
+[ -x "${TOOLKIT_DIR}/ancora_benchmark_cpu" ] || \
+    die "CPU benchmark was not produced"
+
+
+echo
+echo "CPU benchmark built:"
 echo "    ${TOOLKIT_DIR}/ancora_benchmark_cpu"
 
 
 # ============================================================================
-# 9. Build ancora — FAST NVIDIA GPU
+# 11. Build ancora — FAST NVIDIA GPU
 # ============================================================================
 #
-# Result:
+# Configuration:
 #
-#     build/ancora_gpu/libancora_fast_gpu.a
-#
-# The CMake configuration explicitly selects:
-#
+#     ANCORA_MODE_SAFE=OFF
+#     ANCORA_USE_GPU=ON
 #     ANCORA_GPU_PLATFORM=nvidia
 #
-# which corresponds to HIP-over-CUDA.
+# Output:
+#
+#     libancora_fast_gpu.a
 #
 # ============================================================================
 
@@ -432,66 +559,94 @@ echo "============================================================"
 GPU_BUILD_DIR="${TOOLKIT_DIR}/build/ancora_gpu"
 
 
-if ! command -v hipcc >/dev/null 2>&1; then
+if ! have_command hipcc; then
 
     echo
-    echo "warning: hipcc not found."
-    echo "         GPU build will be skipped."
+    echo "warning: hipcc is unavailable."
+    echo "         Skipping GPU build."
     echo "         GPU instances will report unsupported."
 
 else
 
-    echo "hipcc: $(command -v hipcc)"
+    echo
+    echo "==> Configuring NVIDIA HIP build"
 
-    # ------------------------------------------------------------
-    # Configure
-    # ------------------------------------------------------------
 
-    cmake \
-        -S "${ANCORA_SOURCE_DIR}" \
-        -B "${GPU_BUILD_DIR}" \
-        -DANCORA_MODE_SAFE=OFF \
-        -DANCORA_USE_GPU=ON \
-        -DANCORA_BUILD_TESTS=OFF \
-        -DANCORA_GPU_PLATFORM=nvidia \
-        -DANCORA_HIP_ARCHITECTURES="${ANCORA_HIP_ARCHITECTURES}" \
-        -DANCORA_ROCM_ROOT="${ANCORA_ROCM_ROOT}" \
+    GPU_CMAKE_ARGS=(
+        -S "${ANCORA_SOURCE_DIR}"
+        -B "${GPU_BUILD_DIR}"
         -DCMAKE_BUILD_TYPE=Release
+        -DANCORA_MODE_SAFE=OFF
+        -DANCORA_USE_GPU=ON
+        -DANCORA_BUILD_TESTS=OFF
+        -DANCORA_GPU_PLATFORM=nvidia
+        -DANCORA_ROCM_ROOT="${ANCORA_ROCM_ROOT}"
+    )
 
 
-    # ------------------------------------------------------------
-    # Build
-    # ------------------------------------------------------------
+    if [ -n "${ANCORA_HIP_ARCHITECTURES}" ]; then
+        GPU_CMAKE_ARGS+=(
+            "-DANCORA_HIP_ARCHITECTURES=${ANCORA_HIP_ARCHITECTURES}"
+        )
+    fi
 
-    if cmake \
-        --build "${GPU_BUILD_DIR}" \
-        --target ancora \
-        -j"$(nproc)"; then
+
+    if cmake "${GPU_CMAKE_ARGS[@]}"; then
 
         echo
-        echo "==> ancora NVIDIA GPU library built successfully"
+        echo "==> NVIDIA GPU configuration succeeded"
 
     else
 
         echo
-        echo "warning: GPU build of ancora failed."
+        echo "warning: NVIDIA GPU configuration failed."
         echo "         GPU instances will report unsupported."
+
+        GPU_CONFIG_FAILED=1
 
     fi
 
 
-    # ------------------------------------------------------------
-    # Build GPU benchmark driver
-    # ------------------------------------------------------------
-
-    if [ -f "${GPU_BUILD_DIR}/libancora_fast_gpu.a" ]; then
+    if [ "${GPU_CONFIG_FAILED:-0}" -eq 0 ]; then
 
         echo
-        echo "==> Building GPU benchmark driver"
+        echo "==> Building ancora NVIDIA GPU library"
 
 
-        # CMake's HIP package/cache normally records the HIP runtime
-        # library. Extract its directory if available.
+        if cmake \
+            --build "${GPU_BUILD_DIR}" \
+            --target ancora \
+            -j"$(nproc)"; then
+
+            echo
+            echo "NVIDIA GPU library built successfully"
+
+        else
+
+            echo
+            echo "warning: NVIDIA GPU library build failed."
+            echo "         GPU instances will report unsupported."
+
+            GPU_BUILD_FAILED=1
+
+        fi
+
+    fi
+
+
+    # ------------------------------------------------------------------------
+    # Build GPU benchmark driver
+    # ------------------------------------------------------------------------
+
+    if [ "${GPU_CONFIG_FAILED:-0}" -eq 0 ] && \
+       [ "${GPU_BUILD_FAILED:-0}" -eq 0 ] && \
+       [ -f "${GPU_BUILD_DIR}/libancora_fast_gpu.a" ]; then
+
+
+        echo
+        echo "==> Locating HIP runtime"
+
+
         HIP_LIBDIR="$(
             grep -E '^HIP_LIBRARY:FILEPATH=' \
                 "${GPU_BUILD_DIR}/CMakeCache.txt" \
@@ -501,28 +656,38 @@ else
         )
 
 
-        # Fall back to the standard ROCm library directory.
-        if [ -z "${HIP_LIBDIR}" ] || \
-           [ ! -f "${HIP_LIBDIR}/libamdhip64.so" ]; then
-
+        if [ -z "${HIP_LIBDIR}" ]; then
             HIP_LIBDIR="${ANCORA_ROCM_ROOT}/lib"
+        fi
+
+
+        if [ ! -f "${HIP_LIBDIR}/libamdhip64.so" ]; then
+
+            if [ -f "${ANCORA_ROCM_ROOT}/lib/libamdhip64.so" ]; then
+                HIP_LIBDIR="${ANCORA_ROCM_ROOT}/lib"
+            fi
 
         fi
 
 
         if [ ! -f "${HIP_LIBDIR}/libamdhip64.so" ]; then
 
-            echo "warning: libamdhip64.so was not found." >&2
-            echo "         GPU benchmark driver will not be built." >&2
+            echo
+            echo "warning: libamdhip64.so was not found."
+            echo "         GPU benchmark will not be built."
 
         else
 
-            echo "Using HIP runtime:"
+            echo "HIP runtime:"
             echo "    ${HIP_LIBDIR}/libamdhip64.so"
 
 
-            # HIP objects may not be compatible with a PIE executable,
-            # so disable PIE for this benchmark driver.
+            echo
+            echo "==> Building NVIDIA GPU benchmark"
+
+
+            # The HIP objects may not be compatible with a PIE executable,
+            # so explicitly disable PIE.
             cc \
                 -O2 \
                 -std=c11 \
@@ -536,12 +701,22 @@ else
                 -L"${HIP_LIBDIR}" \
                 -lamdhip64 \
                 -lhighs \
+                -lopenblas \
                 -lm
 
 
-            echo
-            echo "Built GPU driver:"
-            echo "    ${TOOLKIT_DIR}/ancora_benchmark_gpu"
+            if [ -x "${TOOLKIT_DIR}/ancora_benchmark_gpu" ]; then
+
+                echo
+                echo "NVIDIA GPU benchmark built:"
+                echo "    ${TOOLKIT_DIR}/ancora_benchmark_gpu"
+
+            else
+
+                echo
+                echo "warning: GPU benchmark was not produced."
+
+            fi
 
         fi
 
@@ -551,30 +726,33 @@ fi
 
 
 # ============================================================================
-# 10. Final summary
+# 12. Final summary
 # ============================================================================
 
 echo
 echo "============================================================"
-echo "Install complete"
+echo "Installation complete"
 echo "============================================================"
 
 if [ -x "${TOOLKIT_DIR}/ancora_benchmark_cpu" ]; then
-    echo "CPU benchmark:  ${TOOLKIT_DIR}/ancora_benchmark_cpu"
+    echo "CPU benchmark:"
+    echo "    ${TOOLKIT_DIR}/ancora_benchmark_cpu"
 else
-    echo "CPU benchmark:  NOT BUILT"
+    echo "CPU benchmark: NOT AVAILABLE"
 fi
 
 
 if [ -x "${TOOLKIT_DIR}/ancora_benchmark_gpu" ]; then
-    echo "GPU benchmark:  ${TOOLKIT_DIR}/ancora_benchmark_gpu"
+    echo "GPU benchmark:"
+    echo "    ${TOOLKIT_DIR}/ancora_benchmark_gpu"
 else
-    echo "GPU benchmark:  unavailable"
+    echo "GPU benchmark: NOT AVAILABLE"
 fi
 
+
 echo
-echo "GPU platform:    NVIDIA"
-echo "HIP backend:     HIP-over-CUDA"
-echo "ROCm root:       ${ANCORA_ROCM_ROOT}"
-echo "ROCm version:    ${ROCM_VERSION}"
+echo "GPU platform: NVIDIA"
+echo "HIP backend:  HIP-over-CUDA"
+echo "ROCm root:    ${ANCORA_ROCM_ROOT}"
+echo "ROCm version: ${ROCM_VERSION}"
 echo "============================================================"
