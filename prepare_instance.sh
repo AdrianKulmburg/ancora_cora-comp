@@ -1,21 +1,6 @@
 #!/bin/bash
 
 # prepare_instance.sh — untimed setup before each instance.
-# Arguments (the interface version, then the instance's instances.csv columns in file order):
-# - $1: interface version string, e.g. "v1"
-# - $2: benchmark,  the set representation, e.g. "zonotope" or "zonotope-batched"
-# - $3: instance,   "<operation>-<n>d[-b<batch>]-<device>", e.g. "matMul-500d-b10-gpu"
-# - $4: params,     JSON object with everything the tool needs, e.g. '{"set": "zonotope",
-#                   "operation": "matMul", "dim": 500, "generators": 1000, "device": "gpu",
-#                   "repetition": 100, "batch_size": 10}'
-# A column added to the catalog later arrives as a further argument, in file order.
-#
-# This step is NOT timed, and the instance itself — inputs included — belongs in
-# run_instance.sh. Use it only for setup the measurement should not carry, such as starting
-# a long-lived process for your library or initializing the GPU. Doing nothing is fine.
-#
-# A nonzero exit code skips this instance.
-
 set -e
 
 VERSION_STRING="v1"
@@ -24,7 +9,28 @@ if [ "$1" != "$VERSION_STRING" ]; then
     exit 1
 fi
 
-# No untimed setup is needed: the benchmark driver is a standalone binary that does all
-# input generation and measurement inside run_instance.sh.
+PARAMS="$4"
+
+# Extract the device type from the JSON payload
+read -r DEVICE <<EOF
+$(printf '%s' "$PARAMS" | python3 -c 'import json,sys; p=json.load(sys.stdin); print(p.get("device", "cpu"))')
+EOF
+
+TOOLKIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# If the instance uses a GPU, warm it up / initialize the context
+if [ "$DEVICE" = "gpu" ]; then
+    if [ -x "${TOOLKIT_DIR}/ancora_benchmark_gpu" ]; then
+        echo "Initializing and warming up GPU context..."
+
+        # Run a tiny, minimal invocation to force HIP/ROCm runtime initialization
+        # and kernel loading without affecting your actual timed measurements.
+        # (Adjust arguments to match a minimal valid run for your binary,
+        # or redirect output to /dev/null to keep logs clean)
+        "${TOOLKIT_DIR}/ancora_benchmark_gpu" "zonotope" "matMul" "1" "1" "1" "1" "0" "" > /dev/null 2>&1 || true
+    else
+        echo "No GPU driver found; skipping warm-up."
+    fi
+fi
 
 exit 0
