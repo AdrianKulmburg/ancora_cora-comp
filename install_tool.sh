@@ -659,6 +659,16 @@ echo "    $(command -v nvcc)"
 
 nvcc --version
 
+section "Debugging CUDA / ROCm Version Skew"
+
+echo "=== System Info ==="
+nvcc --version
+cat /usr/local/cuda/version.txt 2>/dev/null || true
+dpkg -l | grep -E "cuda|rocm|hip" || true
+
+# Force an early exit to inspect the output
+die "Stopping here to inspect CUDA and ROCm versions."
+
 
 # ============================================================================
 # 7. HIP / ROCm NVIDIA backend
