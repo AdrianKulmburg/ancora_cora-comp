@@ -36,6 +36,41 @@ VERSION="${1:-v1}"
 
 ANCORA_GPU_PLATFORM="nvidia"
 
+echo
+echo "============================================================"
+echo "Checking NVIDIA GPU"
+echo "============================================================"
+
+if ! command -v nvidia-smi >/dev/null 2>&1; then
+    echo "ERROR: nvidia-smi is not available." >&2
+    exit 1
+fi
+
+if ! nvidia-smi; then
+    echo "ERROR: nvidia-smi failed." >&2
+    exit 1
+fi
+
+GPU_NAME="$(nvidia-smi --query-gpu=name --format=csv,noheader)"
+
+if [ -z "${GPU_NAME}" ]; then
+    echo "ERROR: No NVIDIA GPU detected." >&2
+    exit 1
+fi
+
+echo
+echo "GPU name:"
+echo "    ${GPU_NAME}"
+
+echo
+echo "GPU compute capability:"
+nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true
+
+echo
+echo "Stopping installation intentionally so the GPU can be identified."
+exit 1
+
+
 ROCM_VERSION="${ROCM_VERSION:-6.3.1}"
 ANCORA_ROCM_ROOT="${ANCORA_ROCM_ROOT:-/opt/rocm}"
 
