@@ -890,21 +890,30 @@ else
     GPU_ARCH_FLAG="--offload-arch=${ANCORA_HIP_ARCHITECTURES}"
 fi
 
-hipcc \
-    -x cu \
-    -O2 \
-    -std=c++17 \
-    "${GPU_ARCH_FLAG}" \
+#hipcc \
+#    -x cu \
+#    -O2 \
+#    -std=c++17 \
+#    "${GPU_ARCH_FLAG}" \
+#    -I"${ANCORA_SOURCE_DIR}/include" \
+#    -DANCORA_MODE=ANCORA_MODE_FAST \
+#    -DANCORA_USE_GPU=1 \
+#    "${TOOLKIT_DIR}/src/ancora_benchmark.c" \
+#    "${GPU_BUILD_DIR}/libancora_fast_gpu.a" \
+#    -L/usr/local/lib \
+#    -lhighs \
+#    -lm \
+#    -o "${TOOLKIT_DIR}/ancora_benchmark_gpu"
+
+cc -O2 -std=c11 -no-pie \
     -I"${ANCORA_SOURCE_DIR}/include" \
     -DANCORA_MODE=ANCORA_MODE_FAST \
     -DANCORA_USE_GPU=1 \
     "${TOOLKIT_DIR}/src/ancora_benchmark.c" \
+    -o "${TOOLKIT_DIR}/ancora_benchmark_gpu" \
     "${GPU_BUILD_DIR}/libancora_fast_gpu.a" \
-    -L/usr/local/lib \
-    -lhighs \
-    -lm \
-    -o "${TOOLKIT_DIR}/ancora_benchmark_gpu"
-
+    -L/usr/local/cuda/lib64 -lcudart -lcublas \
+    -L/usr/local/lib -lhighs -lm
 
 if [ ! -x "${TOOLKIT_DIR}/ancora_benchmark_gpu" ]; then
     die "NVIDIA GPU benchmark was not produced."
