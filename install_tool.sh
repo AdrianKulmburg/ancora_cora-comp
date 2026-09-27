@@ -269,21 +269,49 @@ fi
 # 4. CUDA
 # ============================================================================
 #
-# CUDA is the actual NVIDIA backend underneath HIP.
+# CUDA is the NVIDIA backend underneath HIP.
 #
-# We need nvcc and the CUDA runtime.
+# We need:
 #
+#     nvcc
+#     CUDA runtime libraries
+#
+# Ubuntu may install CUDA under /usr/local/cuda-<version>/ rather than making
+# nvcc immediately available on PATH, so explicitly locate it.
 # ============================================================================
 
 echo
 echo "==> Checking CUDA"
 
-if have_command nvcc; then
 
-    echo "CUDA already installed:"
-    nvcc --version
+CUDA_ROOT=""
 
-else
+
+# First try the conventional symlink.
+if [ -x /usr/local/cuda/bin/nvcc ]; then
+
+    CUDA_ROOT="/usr/local/cuda"
+
+fi
+
+
+# Otherwise search versioned CUDA installations.
+if [ -z "${CUDA_ROOT}" ]; then
+
+    for candidate in /usr/local/cuda-*; do
+
+        if [ -x "${candidate}/bin/nvcc" ]; then
+            CUDA_ROOT="${candidate}"
+            break
+        fi
+
+    done
+
+fi
+
+
+# If CUDA wasn't found, install it.
+if [ -z "${CUDA_ROOT}" ]; then
 
     echo "CUDA not found; installing CUDA toolkit"
 
@@ -306,10 +334,65 @@ else
         cuda-toolkit
 
 
-    have_command nvcc || \
-        die "CUDA installation completed but nvcc was not found"
+    # Look again after installation.
+    if [ -x /usr/local/cuda/bin/nvcc ]; then
+
+        CUDA_ROOT="/usr/local/cuda"
+
+    else
+
+        for candidate in /usr/local/cuda-*; do
+
+            if [ -x "${candidate}/bin/nvcc" ]; then
+                CUDA_ROOT="${candidate}"
+                break
+            fi
+
+        done
+
+    fi
 
 fi
+
+
+# CUDA must have been found by this point.
+if [ -z "${CUDA_ROOT}" ]; then
+
+    echo
+    echo "CUDA installation completed, but nvcc could not be located." >&2
+
+    echo >&2
+    echo "Searching for nvcc:" >&2
+
+    find /usr/local /usr -name nvcc -type f 2>/dev/null | head -20 >&2 || true
+
+    echo >&2
+    echo "Installed CUDA packages:" >&2
+
+    dpkg -l | grep -i cuda >&2 || true
+
+    die "Could not locate CUDA nvcc"
+
+fi
+
+
+# Put CUDA on PATH and library search paths.
+export CUDA_HOME="${CUDA_ROOT}"
+export PATH="${CUDA_ROOT}/bin:${PATH}"
+
+export LD_LIBRARY_PATH="${CUDA_ROOT}/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+
+echo
+echo "CUDA root:"
+echo "    ${CUDA_ROOT}"
+
+echo
+echo "nvcc:"
+echo "    $(command -v nvcc)"
+
+nvcc --version
+
 
 
 # ============================================================================
@@ -370,6 +453,8 @@ export PATH="${ANCORA_ROCM_ROOT}/bin:${PATH}"
 
 # Force the NVIDIA backend for tools that honor HIP_PLATFORM.
 export HIP_PLATFORM="nvidia"
+export CUDA_PATH="${CUDA_ROOT}"
+
 
 
 echo
