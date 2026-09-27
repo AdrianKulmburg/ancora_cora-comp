@@ -159,13 +159,8 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
 #
 # ancora FAST CPU requires BLAS.
 #
-# We deliberately use OpenBLAS rather than depending on CMake's generic BLAS
-# autodetection.
-#
-# This avoids failures such as:
-#
-#   Could NOT find BLAS (missing: BLAS_LIBRARIES)
-#
+# Ubuntu may install cblas.h in an architecture-specific OpenBLAS include
+# directory, so do not assume it lives at /usr/include/cblas.h.
 # ============================================================================
 
 echo
@@ -177,12 +172,10 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
 
 echo "==> Checking OpenBLAS installation"
 
-if [ ! -f /usr/include/cblas.h ]; then
-    die "OpenBLAS installed but /usr/include/cblas.h was not found"
-fi
-
 OPENBLAS_LIB=""
+OPENBLAS_INCLUDE=""
 
+# Find the actual OpenBLAS shared library.
 for candidate in \
     /usr/lib/x86_64-linux-gnu/libopenblas.so \
     /usr/lib/x86_64-linux-gnu/openblas-pthread/libopenblas.so \
@@ -195,15 +188,34 @@ do
     fi
 done
 
+# Find cblas.h wherever the Debian package installed it.
+while IFS= read -r candidate; do
+    if [ -f "${candidate}" ]; then
+        OPENBLAS_INCLUDE="$(dirname "${candidate}")"
+        break
+    fi
+done < <(
+    dpkg -L libopenblas-dev 2>/dev/null |
+    grep '/cblas\.h$'
+)
+
 if [ -z "${OPENBLAS_LIB}" ]; then
     echo "Installed OpenBLAS files:" >&2
-    dpkg -L libopenblas-dev | grep -E 'libopenblas|cblas.h' >&2 || true
+    dpkg -L libopenblas-dev >&2 || true
     die "Could not locate libopenblas.so"
 fi
 
-echo "OpenBLAS library: ${OPENBLAS_LIB}"
+if [ -z "${OPENBLAS_INCLUDE}" ]; then
+    echo "Installed OpenBLAS files:" >&2
+    dpkg -L libopenblas-dev >&2 || true
+    die "Could not locate cblas.h"
+fi
+
+echo "OpenBLAS library : ${OPENBLAS_LIB}"
+echo "OpenBLAS includes: ${OPENBLAS_INCLUDE}"
 
 ldconfig
+
 
 
 # ============================================================================
@@ -487,7 +499,9 @@ cmake \
     -DANCORA_MODE_SAFE=OFF \
     -DANCORA_USE_GPU=OFF \
     -DANCORA_BUILD_TESTS=OFF \
-    -DBLA_VENDOR=OpenBLAS
+    -DBLA_VENDOR=OpenBLAS \
+    -DBLAS_LIBRARIES="${OPENBLAS_LIB}" \
+    -DBLAS_INCLUDE_DIR="${OPENBLAS_INCLUDE}"
 
 
 echo
