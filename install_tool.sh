@@ -98,6 +98,11 @@ else
     echo "==> HIP already installed"
 fi
 
+# ROCm's own docs note /opt/rocm/bin is NOT added to PATH automatically by
+# the apt packages in a non-interactive shell -- make it available here so
+# `command -v hipcc` below (and the actual GPU build later) can find it.
+export PATH="/opt/rocm/bin${PATH:+:${PATH}}"
+
 # --- Locate the ancora source tree ---------------------------------------------
 TOOLKIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${TOOLKIT_DIR}/.." && pwd)"
