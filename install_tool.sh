@@ -521,153 +521,57 @@ fi
 
 
 # ============================================================================
-# 6. CUDA
-# ============================================================================
-#
-# NVIDIA driver and CUDA toolkit are separate things.
-#
-# The driver is already present because nvidia-smi worked above.
-# We still need nvcc for HIP-over-CUDA compilation.
+# 6. CUDA (Pinned Version)
 # ============================================================================
 
 section "Checking CUDA"
 
 CUDA_ROOT=""
+DESIRED_CUDA_VERSION="12-6"   # Pinned to a ROCm 6.x compatible version
 
-
-# ---------------------------------------------------------------------------
-# Existing conventional installation.
-# ---------------------------------------------------------------------------
-
-if [ -x /usr/local/cuda/bin/nvcc ]; then
+# Check if the specific version is already there
+if [ -x "/usr/local/cuda-${DESIRED_CUDA_VERSION//-/.}/bin/nvcc" ]; then
+    CUDA_ROOT="/usr/local/cuda-${DESIRED_CUDA_VERSION//-/.}"
+elif [ -x /usr/local/cuda/bin/nvcc ]; then
+    # Fallback check if /usr/local/cuda points to a compatible version
     CUDA_ROOT="/usr/local/cuda"
 fi
 
-
-# ---------------------------------------------------------------------------
-# Existing versioned installation.
-# ---------------------------------------------------------------------------
-
+# Install if missing
 if [ -z "${CUDA_ROOT}" ]; then
-
-    for candidate in /usr/local/cuda-*; do
-
-        if [ -x "${candidate}/bin/nvcc" ]; then
-            CUDA_ROOT="${candidate}"
-            break
-        fi
-
-    done
-
-fi
-
-
-# ---------------------------------------------------------------------------
-# Install CUDA if necessary.
-# ---------------------------------------------------------------------------
-
-if [ -z "${CUDA_ROOT}" ]; then
-
-    echo "CUDA toolkit not found."
-    echo "Installing NVIDIA CUDA toolkit."
+    echo "CUDA ${DESIRED_CUDA_VERSION} toolkit not found. Installing..."
 
     CUDA_KEYRING="cuda-keyring_1.1-1_all.deb"
     CUDA_KEYRING_PATH="/tmp/${CUDA_KEYRING}"
-
 
     wget -q \
         "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/${CUDA_KEYRING}" \
         -O "${CUDA_KEYRING_PATH}"
 
-
     dpkg -i "${CUDA_KEYRING_PATH}"
-
-
     apt-get update
 
-
+    # Pin the package installation explicitly to version 12.6
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        cuda-toolkit
+        cuda-toolkit-${DESIRED_CUDA_VERSION}
 
-
-    # Search again after installation.
-
-    if [ -x /usr/local/cuda/bin/nvcc ]; then
-
-        CUDA_ROOT="/usr/local/cuda"
-
-    else
-
-        for candidate in /usr/local/cuda-*; do
-
-            if [ -x "${candidate}/bin/nvcc" ]; then
-                CUDA_ROOT="${candidate}"
-                break
-            fi
-
-        done
-
-    fi
-
+    CUDA_ROOT="/usr/local/cuda-${DESIRED_CUDA_VERSION//-/.}"
 fi
 
-
-if [ -z "${CUDA_ROOT}" ]; then
-
-    echo
-    echo "Searching for nvcc:" >&2
-
-    find \
-        /usr/local \
-        /usr \
-        -name nvcc \
-        -type f \
-        2>/dev/null \
-        | head -20 >&2 || true
-
-
-    echo
-    echo "Installed CUDA packages:" >&2
-
-    dpkg -l | grep -i cuda >&2 || true
-
-
-    die "CUDA installation completed, but nvcc was not found."
-
+if [ ! -x "${CUDA_ROOT}/bin/nvcc" ]; then
+    die "CUDA installation completed, but nvcc was not found at ${CUDA_ROOT}/bin/nvcc."
 fi
-
 
 export CUDA_HOME="${CUDA_ROOT}"
 export CUDA_PATH="${CUDA_ROOT}"
-
 export PATH="${CUDA_ROOT}/bin:${PATH}"
 
 if [ -d "${CUDA_ROOT}/lib64" ]; then
-
     export LD_LIBRARY_PATH="${CUDA_ROOT}/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-
 fi
 
-
-echo
-echo "CUDA root:"
-echo "    ${CUDA_ROOT}"
-
-echo
-echo "nvcc:"
-echo "    $(command -v nvcc)"
-
+echo "CUDA root: ${CUDA_ROOT}"
 nvcc --version
-
-section "Debugging CUDA / ROCm Version Skew"
-
-echo "=== System Info ==="
-nvcc --version
-cat /usr/local/cuda/version.txt 2>/dev/null || true
-dpkg -l | grep -E "cuda|rocm|hip" || true
-
-# Force an early exit to inspect the output
-die "Stopping here to inspect CUDA and ROCm versions."
 
 
 # ============================================================================
