@@ -6,6 +6,8 @@
 #
 # CORA-COMP installation script for ancora.
 #
+# Requires CMake 3.28+ for native NVIDIA HIP language support.
+#
 # This installation is specifically for NVIDIA GPUs.
 #
 # It builds:
@@ -132,6 +134,7 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
     g++ \
     git \
     python3 \
+    python3-pip \
     wget \
     curl \
     build-essential \
@@ -142,7 +145,53 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
 
 
 # ============================================================================
-# 2. Detect NVIDIA GPU
+# 2. CMake
+# ============================================================================
+#
+# CMake 3.28 introduced native NVIDIA HIP language support. Ubuntu 22.04
+# commonly provides CMake 3.22, which is too old for HIP-over-CUDA builds.
+#
+# Install CMake from the Python wheel so the build does not depend on the
+# Ubuntu repository's CMake version.
+# ============================================================================
+
+section "Checking CMake"
+
+CMAKE_MIN_VERSION="3.28.0"
+
+python3 -m pip install --upgrade --disable-pip-version-check "cmake>=3.28,<4"
+
+# Prefer the pip-installed CMake if it lives outside the normal PATH.
+if [ -x /usr/local/bin/cmake ]; then
+    export PATH="/usr/local/bin:${PATH}"
+fi
+
+if ! have_command cmake; then
+    die "CMake was not found after installation."
+fi
+
+echo
+echo "CMake:"
+echo "    $(command -v cmake)"
+cmake --version
+
+CMAKE_VERSION="$(
+    cmake --version |
+    head -1 |
+    sed -E 's/.* ([0-9]+\.[0-9]+\.[0-9]+).*/\1/'
+)"
+
+if [ -z "${CMAKE_VERSION}" ]; then
+    die "Could not determine the installed CMake version."
+fi
+
+if [ "$(printf '%s\n' "${CMAKE_VERSION}" "${CMAKE_MIN_VERSION}" | sort -V | head -1)" != "${CMAKE_MIN_VERSION}" ]; then
+    die "CMake ${CMAKE_MIN_VERSION} or newer is required; found ${CMAKE_VERSION}."
+fi
+
+
+# ============================================================================
+# 3. Detect NVIDIA GPU
 # ============================================================================
 #
 # IMPORTANT:
@@ -316,7 +365,7 @@ fi
 
 
 # ============================================================================
-# 3. BLAS / OpenBLAS
+# 4. BLAS / OpenBLAS
 # ============================================================================
 
 section "Installing BLAS / OpenBLAS"
@@ -423,7 +472,7 @@ ldconfig
 
 
 # ============================================================================
-# 4. HiGHS
+# 5. HiGHS
 # ============================================================================
 
 section "Installing HiGHS"
@@ -472,7 +521,7 @@ fi
 
 
 # ============================================================================
-# 5. CUDA
+# 6. CUDA
 # ============================================================================
 #
 # NVIDIA driver and CUDA toolkit are separate things.
@@ -612,7 +661,7 @@ nvcc --version
 
 
 # ============================================================================
-# 6. HIP / ROCm NVIDIA backend
+# 7. HIP / ROCm NVIDIA backend
 # ============================================================================
 
 section "Installing HIP-over-CUDA"
@@ -670,7 +719,7 @@ hipcc --version
 
 
 # ============================================================================
-# 7. hipBLAS
+# 8. hipBLAS
 # ============================================================================
 
 section "Installing hipBLAS"
@@ -681,7 +730,7 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
 
 
 # ============================================================================
-# 8. Verify HIP NVIDIA backend
+# 9. Verify HIP NVIDIA backend
 # ============================================================================
 
 section "Verifying HIP NVIDIA backend"
@@ -701,7 +750,7 @@ echo "    ${HIP_PLATFORM}"
 
 
 # ============================================================================
-# 9. Locate ancora source
+# 10. Locate ancora source
 # ============================================================================
 
 section "Locating ancora source"
@@ -753,7 +802,7 @@ echo "    ${ANCORA_SOURCE_DIR}"
 
 
 # ============================================================================
-# 10. Build ancora FAST CPU
+# 11. Build ancora FAST CPU
 # ============================================================================
 
 section "Building ancora FAST CPU"
@@ -790,7 +839,7 @@ echo "    ${CPU_BUILD_DIR}/libancora_fast.a"
 
 
 # ============================================================================
-# 11. Build CPU benchmark
+# 12. Build CPU benchmark
 # ============================================================================
 
 section "Building CPU benchmark"
@@ -819,7 +868,7 @@ echo "    ${TOOLKIT_DIR}/ancora_benchmark_cpu"
 
 
 # ============================================================================
-# 12. Build ancora FAST NVIDIA GPU
+# 13. Build ancora FAST NVIDIA GPU
 # ============================================================================
 #
 # The architecture was detected from the actual NVIDIA GPU above.
@@ -853,14 +902,21 @@ if ! have_command hipcc; then
     die "hipcc is not available; cannot build the NVIDIA GPU version."
 fi
 
+if [ ! -x "${CUDA_ROOT}/bin/nvcc" ]; then
+    die "NVCC was not found at ${CUDA_ROOT}/bin/nvcc; cannot build NVIDIA HIP."
+fi
+
 
 # ---------------------------------------------------------------------------
 # Configure.
 #
 # IMPORTANT:
 #
-# ANCORA_HIP_ARCHITECTURES is passed explicitly so CMake 3.22 does not have
+# ANCORA_HIP_ARCHITECTURES is passed explicitly so CMake does not have
 # to run amdgpu-arch or otherwise guess an architecture.
+#
+# CMAKE_HIP_PLATFORM=nvidia and CMAKE_HIP_COMPILER=nvcc are passed explicitly
+# because this is a native CMake HIP-language build targeting NVIDIA.
 # ---------------------------------------------------------------------------
 
 cmake \
@@ -872,6 +928,9 @@ cmake \
     -DANCORA_GPU_PLATFORM=nvidia \
     -DANCORA_HIP_ARCHITECTURES="${ANCORA_HIP_ARCHITECTURES}" \
     -DANCORA_ROCM_ROOT="${ANCORA_ROCM_ROOT}" \
+    -DCMAKE_HIP_PLATFORM=nvidia \
+    -DCMAKE_HIP_COMPILER="${CUDA_ROOT}/bin/nvcc" \
+    -DCMAKE_CUDA_COMPILER="${CUDA_ROOT}/bin/nvcc" \
     -DANCORA_BUILD_TESTS=OFF
 
 
@@ -896,7 +955,7 @@ echo "    ${GPU_BUILD_DIR}/libancora_fast_gpu.a"
 
 
 # ============================================================================
-# 13. Build NVIDIA GPU benchmark
+# 14. Build NVIDIA GPU benchmark
 # ============================================================================
 #
 # Use hipcc rather than cc.
@@ -933,7 +992,7 @@ fi
 
 
 # ============================================================================
-# 14. Final verification
+# 15. Final verification
 # ============================================================================
 
 section "Final verification"
@@ -971,7 +1030,7 @@ echo "    ${ANCORA_ROCM_ROOT}"
 
 
 # ============================================================================
-# 15. Done
+# 16. Done
 # ============================================================================
 
 section "Installation complete"
