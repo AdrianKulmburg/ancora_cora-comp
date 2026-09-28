@@ -515,52 +515,96 @@ ldconfig
 
 
 # ============================================================================
-# 5. HiGHS
+# 5. GLPK
+# ============================================================================
+#
+# GLPK is a real GNU autotools project (unlike FLINT 3.x, which moved to
+# CMake), so the source fallback below genuinely uses
+# ./configure; make; make install.
+#
+# Debian/Ubuntu's libglpk-dev normally provides both glpk.h and libglpk.so
+# directly, so the apt path is expected to succeed in almost every case;
+# the from-source build is only a fallback for a worker where that package
+# is unavailable.
 # ============================================================================
 
-section "Installing HiGHS"
+section "Installing GLPK"
 
-if [ ! -f /usr/local/include/highs/interfaces/highs_c_api.h ] || \
-   [ ! -f /usr/local/lib/libhighs.so ]; then
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    libglpk-dev \
+    2>/dev/null || true
 
-    echo "Building HiGHS from source."
+GLPK_HEADER=""
 
-    HIGHS_SRC="${TOOLKIT_DIR}/HiGHS"
+for candidate in \
+    /usr/include/glpk.h \
+    /usr/local/include/glpk.h
+do
+
+    if [ -f "${candidate}" ]; then
+        GLPK_HEADER="${candidate}"
+        break
+    fi
+
+done
 
 
-    if [ ! -d "${HIGHS_SRC}/.git" ]; then
+if [ -z "${GLPK_HEADER}" ]; then
 
-        git clone \
-            --depth 1 \
-            https://github.com/ERGO-Code/HiGHS.git \
-            "${HIGHS_SRC}"
+    echo "glpk.h not found via apt; building GLPK from source."
+
+    GLPK_VERSION="${GLPK_VERSION:-5.0}"
+    GLPK_TARBALL="glpk-${GLPK_VERSION}.tar.gz"
+    GLPK_SRC="${TOOLKIT_DIR}/glpk-${GLPK_VERSION}"
+
+    if [ ! -d "${GLPK_SRC}" ]; then
+
+        wget -q \
+            "https://ftp.gnu.org/gnu/glpk/${GLPK_TARBALL}" \
+            -O "${TOOLKIT_DIR}/${GLPK_TARBALL}"
+
+        tar -xzf "${TOOLKIT_DIR}/${GLPK_TARBALL}" -C "${TOOLKIT_DIR}"
 
     fi
 
-
-    cmake \
-        -S "${HIGHS_SRC}" \
-        -B "${HIGHS_SRC}/build" \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DBUILD_TESTING=OFF
-
-
-    cmake \
-        --build "${HIGHS_SRC}/build" \
-        -j"$(nproc)"
-
-
-    cmake \
-        --install "${HIGHS_SRC}/build"
-
+    (
+        cd "${GLPK_SRC}"
+        ./configure --prefix=/usr/local
+        make -j"$(nproc)"
+        make install
+    )
 
     ldconfig
 
+    for candidate in \
+        /usr/include/glpk.h \
+        /usr/local/include/glpk.h
+    do
+
+        if [ -f "${candidate}" ]; then
+            GLPK_HEADER="${candidate}"
+            break
+        fi
+
+    done
+
+    if [ -z "${GLPK_HEADER}" ]; then
+        die "GLPK was built from source, but glpk.h still could not be located."
+    fi
+
 else
 
-    echo "HiGHS is already installed."
+    echo "glpk.h found via apt."
 
 fi
+
+
+echo
+echo "GLPK header:"
+echo "    ${GLPK_HEADER}"
+
+
+ldconfig
 
 
 # ============================================================================
@@ -811,7 +855,7 @@ cc \
     "${TOOLKIT_DIR}/src/ancora_benchmark.c" \
     -o "${TOOLKIT_DIR}/ancora_benchmark_cpu" \
     "${CPU_BUILD_DIR}/libancora_fast.a" \
-    -lhighs \
+    -L/usr/local/lib -Wl,-rpath,/usr/local/lib -lglpk \
     "${BLAS_LIBRARY}" \
     -lm
 
@@ -948,7 +992,7 @@ cc \
     -o "${TOOLKIT_DIR}/ancora_benchmark_gpu" \
     "${GPU_BUILD_DIR}/libancora_fast_gpu.a" \
     -L/usr/local/cuda/lib64 -lcudart -lcublas \
-    -L/usr/local/lib -lhighs -lm
+    -L/usr/local/lib -Wl,-rpath,/usr/local/lib -lglpk -lm
 
 if [ ! -x "${TOOLKIT_DIR}/ancora_benchmark_gpu" ]; then
     die "NVIDIA GPU benchmark was not produced."
